@@ -1,0 +1,31 @@
+C4Container
+    title Container Diagram - E-Commerce Portal
+    
+    Person(customer, "Покупець", "Купує товари")
+    
+    System_Boundary(ecommerce, "E-Commerce Portal") {
+        Container(webapp, "Web Application", "React", "Веб-інтерфейс")
+        Container(gateway, "API Gateway", "Kong", "Маршрутизація")
+        Container(product, "Product Service", "Node.js", "Каталог товарів")
+    }
+    
+    Rel(customer, webapp, "Використовує", "HTTPS")
+    Rel(webapp, gateway, "Запити", "REST")
+    Rel(gateway, product, "Маршрутизує", "gRPC")
+
+    Container(inventory, "Inventory Service", "Node.js", "Управління запасами")
+    Container(pricing, "Pricing Service", "Node.js", "Ціноутворення")
+    Container(order, "Order Service", "Node.js", "Замовлення")
+    Container(user, "User Service", "Node.js", "Користувачі")
+    Container(content, "Content Service", "Node.js", "Контент")
+    
+    ContainerDb(productdb, "Product DB", "PostgreSQL", "Товари")
+    ContainerDb(orderdb, "Order DB", "PostgreSQL", "Замовлення")
+
+    Rel(gateway, inventory, "Запити", "gRPC")
+    Rel(gateway, pricing, "Запити", "gRPC")
+    Rel(gateway, order, "Запити", "gRPC")
+    Rel(gateway, user, "Запити", "gRPC")
+    Rel(gateway, content, "Запити", "gRPC")
+    Rel(product, productdb, "Читає/Пише", "SQL")
+    Rel(order, orderdb, "Читає/Пише", "SQL")

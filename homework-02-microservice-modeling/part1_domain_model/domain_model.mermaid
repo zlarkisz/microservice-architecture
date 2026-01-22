@@ -1,0 +1,132 @@
+classDiagram
+    namespace ProductCatalog {
+        class Product {
+            +String name
+            +String description
+            +String image
+        }
+
+        class Category {
+            +String name
+            +String description
+        }
+
+        class Brand {
+            +String name
+            +String logo
+        }
+    }
+
+    namespace SupplyChain {
+        class Supplier {
+            +String name
+            +String contactInfo
+        }
+
+        class Stock {
+            +int quantity
+            +String productId
+        }
+
+        class Warehouse {
+            +String name
+            +String location
+        }
+    }
+
+    namespace Pricing {
+        class Price {
+            +String productId
+            +float amount
+            +String currency
+        }
+
+        class Discount {
+            +String name
+            +float percentage
+        }
+
+        class Tax {
+            +String country
+            +float rate
+        }
+    }
+
+    namespace OrderManagement {
+        class Cart {
+            +String oderId
+            +String customerId
+        }
+
+        class Order {
+            +String id
+            +String status
+            +float totalAmount
+        }
+
+        class Payment {
+            +String method
+            +float amount
+        }
+
+        class Shipment {
+            +String address
+            +String status
+        }
+    }
+
+    namespace UserManagement {
+        class User {
+            +String id
+            +String email
+            +String name
+        }
+
+        class Role {
+            +String name
+            +String description
+        }
+
+        class Permission {
+            +String name
+            +String action
+        }
+    }
+
+    namespace ContentManagement {
+        class BlogPost {
+            +String title
+            +String content
+            +String authorId
+        }
+
+        class News {
+            +String title
+            +String content
+        }
+
+        class Review {
+            +String productId
+            +String customerId
+            +int rating
+        }
+    }
+
+    Product --> Category
+    Product --> Brand
+
+    Stock --> Warehouse
+    Stock --> Product
+
+    Price --> Product
+    Discount --> Category
+
+    Order --> Cart
+    Order --> Payment
+    Order --> Shipment
+
+    User --> Role
+    Role --> Permission
+
+    Review --> Product
+    BlogPost --> User
