@@ -1,0 +1,28 @@
+C4Context
+    title System Context Diagram - E-Commerce Portal
+    
+    Person(guest, "Гість", "Переглядає товари")
+    Person(customer, "Покупець", "Купує товари")
+    Person(supplier, "Постачальник", "Надає товари")
+    Person(partner, "Бізнес-партнер", "Інтегрується через API")
+    Person(admin, "Адміністратор", "Керує системою")
+    Person(moderator, "Модератор", "Модерує контент")
+    
+    System(ecommerce, "E-Commerce Portal", "Онлайн магазин")
+    
+    Rel(guest, ecommerce, "Переглядає каталог")
+    Rel(customer, ecommerce, "Купує товари")
+    Rel(supplier, ecommerce, "Завантажує товари")
+    Rel(partner, ecommerce, "API запити")
+    Rel(admin, ecommerce, "Налаштовує")
+    Rel(moderator, ecommerce, "Модерує")
+
+    System_Ext(payment, "Payment Gateway", "Обробка платежів")
+    System_Ext(shipping, "Shipping Provider", "Доставка")
+    System_Ext(warehouse, "Warehouse System", "Склад")
+    System_Ext(accounting, "Accounting System", "Бухгалтерія")
+
+    Rel(ecommerce, payment, "Обробляє платежі")
+    Rel(ecommerce, shipping, "Створює доставки")
+    Rel(ecommerce, warehouse, "Синхронізує запаси")
+    Rel(ecommerce, accounting, "Передає транзакції")

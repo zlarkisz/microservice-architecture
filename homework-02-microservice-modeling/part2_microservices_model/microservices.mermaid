@@ -1,0 +1,54 @@
+flowchart TB
+    subgraph Clients["Clients"]
+        WebApp["Web Application"]
+        MobileApp["Mobile App"]
+    end
+
+    Gateway["API Gateway"]
+
+    subgraph Services["Microservices"]
+        ProductService["Product Service"]
+        InventoryService["Inventory Service"]
+        PricingService["Pricing Service"]
+        OrderService["Order Service"]
+        UserService["User Service"]
+        ContentService["Content Service"]
+    end
+
+    subgraph Databases["Databases"]
+        ProductDB[("Product DB")]
+        InventoryDB[("Inventory DB")]
+        PricingDB[("Pricing DB")]
+        OrderDB[("Order DB")]
+        UserDB[("User DB")]
+        ContentDB[("Content DB")]
+    end
+
+        subgraph External["External systems"]
+        Payment["Payment Gateway"]
+        Shipping["Shipping Provider"]
+        Warehouse["Warehouse System"]
+        Accounting["Accounting System"]
+    end
+
+    WebApp --> Gateway
+    MobileApp --> Gateway
+
+    Gateway --> ProductService
+    Gateway --> InventoryService
+    Gateway --> PricingService
+    Gateway --> OrderService
+    Gateway --> UserService
+    Gateway --> ContentService
+
+    ProductService --> ProductDB
+    InventoryService --> InventoryDB
+    PricingService --> PricingDB
+    OrderService --> OrderDB
+    UserService --> UserDB
+    ContentService --> ContentDB
+
+    OrderService --> Payment
+    OrderService --> Shipping
+    InventoryService --> Warehouse
+    PricingService --> Accounting
