@@ -1,0 +1,120 @@
+@startuml
+title Sequence: Add to Cart → Payment
+
+actor Customer
+participant "Web App" as Web
+participant "API Gateway" as Gateway
+participant "Order Service" as Order
+participant "Message Broker" as Broker
+participant "Product Service" as Product
+participant "Inventory Service" as Inventory
+participant "Pricing Service" as Pricing
+participant "Payment Gateway" as Payment
+
+== 1. Adding a product to the cart ==
+
+== 1.1 Sync: Receiving a request ==
+
+Customer -> Web : Click "Add to cart"
+Web -> Gateway : POST /cart/items { productId: 123, quantity: 2 }
+Gateway -> Order : Add item to cart
+Order ->> Broker : Publish: ItemAddedToCart { productId, quantity }
+Order --> Gateway : 202 Accepted { status: "processing" }
+Gateway --> Web : 202 Accepted
+Web --> Customer : Shows "Adding to cart..."
+
+== 1.2 Async: Event processing ==
+
+Broker ->> Inventory : Consume: ItemAddedToCart
+note right of Inventory : Checks availability\nin stock
+
+Inventory ->> Broker : Publish: InventoryChecked { productId, quantity, available: true }
+
+Broker ->> Pricing : Consume: InventoryChecked
+note right of Pricing : Calculates the cost:\nquantity × price
+
+Pricing -> Product : GET /products/123/price
+Product --> Pricing : { basePrice: 500 }
+
+Pricing ->> Broker : Publish: PriceCalculated { productId, quantity, unitPrice: 500, total: 1000 }
+
+Broker ->> Order : Consume: PriceCalculated
+note right of Order : Updates cart\nwith final price
+
+Order ->> Web : WebSocket: CartUpdated { cartId: 789, productId: 123, quantity: 2, unitPrice: 500, total: 1000 }
+
+Web --> Customer : Shows cart with price
+
+== 2. Checkout ==
+
+== 2.1 Sync: Starting checkout ==
+
+Customer -> Web : Click "Start checkout"
+Web -> Gateway : POST /checkout { cartId: 789 }
+Gateway -> Order : Start checkout { cartId: 789 }
+Order ->> Broker : Publish: CheckoutStarted { cartId: 789, items: [{ productId: 123, quantity: 2 }] }
+
+Order --> Gateway : 202 Accepted { status: "processing" }
+Gateway --> Web : 202 Accepted
+Web --> Customer : Shows checkout form
+
+== 2.2 Async: Reservation ==
+
+Broker ->> Inventory : Consume: CheckoutStarted { cartId: 789, items: [{ productId: 123, quantity: 2 }] }
+note right of Inventory : Reserve items \nfor 15 minutes
+
+Inventory ->> Broker : Publish: ItemReserved { cartId: 789, items: [{ productId: 123, quantity: 2 }] }
+
+== 2.3 Sync: Submit checkout details ==
+
+Customer -> Web : Submit checkout form { address, delivery, promoCode }
+Web -> Gateway : PUT /checkout/789 { address, delivery, promoCode }
+Gateway -> Order : Update checkout { address, delivery, promoCode }
+Order ->> Broker : Publish: СheckoutUpdated { cartId: 789, address, delivery, promoCode }
+
+Order --> Gateway : 202 Accepted { status: "processing" }
+Gateway --> Web : 202 Accepted
+Web --> Customer : Shows order summary (loading)
+
+== 2.4 Async: Calculate final price ==
+
+Broker ->> Pricing : Consume: CheckoutUpdated { cartId: 789,  address, delivery, promoCode, [{ productId: 123, quantity: 2 }] }
+note right of Pricing : Calculate the final price
+
+Pricing ->> Broker : Publish: PriceCalculated { cartId: 789, subtotal: 1000, delivery: 50, discount: -100, tax: 95, total: 1045 }
+Broker ->> Order : Consume: PriceCalculated { cartId: 789, subtotal: 1000, delivery: 50, discount: -100, tax: 95, total: 1045 }
+note right of Order : Updates checkout\nwith final price
+
+Order ->> Web : WebSocket: CheckoutReady { cartId: 789, subtotal: 1000, delivery: 50, discount: -100, tax: 95, total: 1045 }
+Web --> Customer : Shows order summary with "Pay 1045 UAH" button
+
+== 3. Payment ==
+
+== 3.1 Sync: Process payment ==
+
+Customer -> Web : Click "Pay 1045 UAH"
+Web -> Gateway : POST /payments { cartId: 789, paymentMethod: "card" }
+Gateway -> Order : Process payment { cartId: 789 }
+Order -> Payment : Charge { amount: 1045, currency: UAH, cardToken: xxx }
+Payment --> Order : 200 OK { paymentId: 456, status: "success" }
+Order --> Gateway : 200 OK { paymentId: 456 }
+Gateway --> Web : 200 OK
+Web --> Customer : Shows "Processing payment..."
+
+== 3.2 Async: Confirm order ==
+
+Order ->> Broker : Publish: PaymentCompleted { cartId: 789, paymentId: 456, amount: 1045 }
+
+Broker ->> Inventory : Consume: PaymentCompleted
+note right of Inventory : Confirms reservation\nReduces stock permanently
+
+Inventory ->> Broker : Publish: StockUpdated { productId: 123, quantity: -2 }
+
+Broker ->> Order : Consume: StockUpdated
+note right of Order : Updates order status\nto "confirmed"
+
+Order ->> Web : WebSocket: OrderConfirmed { orderId: 890, total: 1045, status: "confirmed" }
+Web --> Customer : Shows "Thank you! Order #890 confirmed"
+
+
+@enduml
