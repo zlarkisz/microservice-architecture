@@ -1,0 +1,28 @@
+@startuml
+title Sequence: Product Quantity Change → Cart Update
+
+participant "Inventory Service" as Inventory
+participant "Message Broker" as Broker
+participant "Order Service" as Order
+participant "Web App" as Web
+actor Customer
+
+== 1. Stock quantity changes ==
+
+note right of Inventory : Another customer bought 9 items\nStock: 10 → 1
+
+Inventory ->> Broker : Publish: StockChanged { productId: 123, oldQuantity: 10, newQuantity: 1 }
+
+== 2. Check affected carts ==
+
+Broker ->> Order : Consume: StockChanged
+note right of Order : Finds carts with productId: 123\nCart 789 has quantity: 5\n5 > 1 (available) → problem!
+
+== 3. Update customer cart ==
+
+Order ->> Broker : Publish: CartItemAdjusted { cartId: 789, productId: 123, requestedQty: 5, availableQty: 1, action: "reduced" }
+
+Order ->> Web : WebSocket: CartItemAdjusted { cartId: 789, productId: 123, oldQty: 5, newQty: 1, reason: "insufficient stock" }
+Web --> Customer : Shows "iPhone quantity reduced to 1 (only 1 left in stock)"
+
+@enduml

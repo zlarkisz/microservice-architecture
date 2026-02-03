@@ -1,0 +1,33 @@
+@startuml
+title Sequence: Product Name Change → Cart Update
+
+actor Admin
+participant "Web App" as Web
+participant "API Gateway" as Gateway
+participant "Product Service" as Product
+participant "Message Broker" as Broker
+participant "Order Service" as Order
+actor Customer
+
+== 1. Admin updates product name ==
+
+Admin -> Web : Edit product name
+Web -> Gateway : PUT /products/123 { name: "iPhone 15 Pro" }
+Gateway -> Product : Update product { name: "iPhone 15 Pro" }
+Product --> Gateway : 200 OK
+Gateway --> Web : 200 OK
+Web --> Admin : Shows "Product updated"
+
+== 2. Notify about changes ==
+
+Product ->> Broker : Publish: ProductUpdated { productId: 123, field: "name", oldValue: "iPhone 15", newValue: "iPhone 15 Pro" }
+
+Broker ->> Order : Consume: ProductUpdated
+note right of Order : Finds all carts\nwith productId: 123\nUpdates product name
+
+== 3. Update customer cart ==
+
+Order ->> Web : WebSocket: CartItemUpdated { cartId: 789, productId: 123, field: "name", newValue: "iPhone 15 Pro" }
+Web --> Customer : Shows updated product name in cart
+
+@enduml
