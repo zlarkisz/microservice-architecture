@@ -1,0 +1,125 @@
+title Saga Orchestration: Flight Booking with Rollback
+
+actor Customer
+participant "Web App" as WebApp
+participant "API Gateway" as Gateway
+participant "Booking Orchestrator" as Orchestrator
+participant "Message Broker" as Broker
+participant "Booking Service" as BookingService
+participant "Flight Service" as FlightService
+participant "Seat Service" as SeatService
+participant "Redis (Lock)" as Redis
+participant "Baggage Service" as BaggageService
+participant "Pricing Service" as PricingService
+participant "Payment Service" as PaymentService
+participant "Notification Service" as NotificationService
+
+note over Customer: Selects:\nFlight: KBP → BCN (15 Jun)\nSeat: 12A (Window)\nBaggage: 23kg
+
+Customer->WebApp: Click "Book Flight"
+WebApp->Gateway: POST /api/bookings\n{flightId: "KBP-BCN-0615",\nseatId: "12A", baggage: 23kg,\npassenger: "John Doe"}
+Gateway->Orchestrator: StartBookingSaga(bookingData)
+
+note over Orchestrator: Saga State: STARTED\nSteps: [booking, flight, seat,\nbaggage, pricing, payment]
+
+group T1: Create Booking
+Orchestrator->>Broker: Command: CreateBooking
+Broker->>BookingService: CreateBooking\n{passengerId, flightId, seatId}
+BookingService->BookingService: Create booking\nstatus = PENDING
+BookingService-->>Broker: Reply: BookingCreated
+Broker-->>Orchestrator: BookingCreated\n{bookingId: 456, PNR: "ABC123"}
+note over Orchestrator: Saga State: BOOKING_CREATED\nCompensation: [CancelBooking]
+end
+
+group T2: Validate Flight [read-only]
+Orchestrator->>Broker: Command: ValidateFlight
+Broker->>FlightService: ValidateFlight\n{flightId: "KBP-BCN-0615"}
+FlightService->FlightService: Check flight exists\nCheck seats available
+FlightService-->>Broker: Reply: FlightValidated
+Broker-->>Orchestrator: FlightValidated\n{status: OK, availableSeats: 42}
+note over Orchestrator: Saga State: FLIGHT_VALIDATED\n(no compensation - read only)
+end
+
+group T3: Reserve Seat [with Distributed Lock]
+Orchestrator->>Broker: Command: ReserveSeat
+Broker->>SeatService: ReserveSeat\n{flightId: "KBP-BCN-0615", seatId: "12A"}
+
+SeatService->Redis: SET seat:KBP-BCN-0615:12A:lock\nNX EX 900 (TTL 15 min)
+Redis-->SeatService: OK (lock acquired)
+
+SeatService->SeatService: UPDATE seats\nSET status = 'RESERVED'\nreserved_until = NOW() + 15min
+
+SeatService-->>Broker: Reply: SeatReserved
+Broker-->>Orchestrator: SeatReserved\n{seatId: "12A", expiresIn: 15min}
+note over Orchestrator: Saga State: SEAT_RESERVED\nCompensation: [ReleaseSeat, CancelBooking]\n⏱️ Timer: 15 min started
+end
+
+group T4: Reserve Baggage
+Orchestrator->>Broker: Command: ReserveBaggage
+Broker->>BaggageService: ReserveBaggage\n{flightId: "KBP-BCN-0615", weight: 23kg}
+BaggageService->BaggageService: Check cargo capacity\nReserve 23kg quota
+BaggageService-->>Broker: Reply: BaggageReserved
+Broker-->>Orchestrator: BaggageReserved\n{baggageId: 789, weight: 23kg}
+note over Orchestrator: Saga State: BAGGAGE_RESERVED\nCompensation: [ReleaseBaggage,\nReleaseSeat, CancelBooking]
+end
+
+group T5: Calculate Price [read-only]
+Orchestrator->>Broker: Command: CalculatePrice
+Broker->>PricingService: CalculatePrice\n{flightId, seatId: "12A", baggage: 23kg}
+PricingService->PricingService: Base fare: €180\nSeat 12A (window): +€15\nBaggage 23kg: +€25\nTaxes & fees: +€27.50
+PricingService-->>Broker: Reply: PriceCalculated
+Broker-->>Orchestrator: PriceCalculated\n{total: €247.50}
+note over Orchestrator: Saga State: PRICE_CALCULATED\n(no compensation - read only)
+end
+
+group T6: Process Payment [FAILS]
+Orchestrator->>Broker: Command: ProcessPayment
+Broker->>PaymentService: ProcessPayment\n{amount: €247.50, card: "****1234"}
+PaymentService->PaymentService: Call payment gateway\n(Stripe/Adyen)
+note right of PaymentService: ❌ Card declined!\nInsufficient funds
+PaymentService-->>Broker: Reply: PaymentFailed
+Broker-->>Orchestrator: PaymentFailed\n{reason: "CARD_DECLINED"}
+note over Orchestrator: Saga State: PAYMENT_FAILED\n🔄 TRIGGER ROLLBACK
+end
+
+note over Orchestrator, PaymentService: ══════════ ROLLBACK SEQUENCE ══════════
+
+group C3: Release Baggage [Compensation]
+Orchestrator->>Broker: Command: ReleaseBaggage
+Broker->>BaggageService: ReleaseBaggage\n{baggageId: 789}
+BaggageService->BaggageService: UPDATE reservations\nSET status = 'CANCELLED'
+BaggageService-->>Broker: Reply: BaggageReleased
+Broker-->>Orchestrator: BaggageReleased ✓
+note over Orchestrator: Compensation 1/3 done
+end
+
+group C2: Release Seat [Compensation]
+Orchestrator->>Broker: Command: ReleaseSeat
+Broker->>SeatService: ReleaseSeat\n{flightId: "KBP-BCN-0615", seatId: "12A"}
+SeatService->SeatService: UPDATE seats\nSET status = 'AVAILABLE'
+SeatService->Redis: DEL seat:KBP-BCN-0615:12A:lock
+Redis-->SeatService: OK (lock released)
+SeatService-->>Broker: Reply: SeatReleased
+Broker-->>Orchestrator: SeatReleased ✓
+note over Orchestrator: Compensation 2/3 done
+end
+
+group C1: Cancel Booking [Compensation]
+Orchestrator->>Broker: Command: CancelBooking
+Broker->>BookingService: CancelBooking\n{bookingId: 456, reason: "PAYMENT_FAILED"}
+BookingService->BookingService: UPDATE bookings\nSET status = 'CANCELLED'
+BookingService-->>Broker: Reply: BookingCancelled
+Broker-->>Orchestrator: BookingCancelled ✓
+note over Orchestrator: Saga State: SAGA_FAILED\nAll compensations complete
+end
+
+group Notify Customer
+Orchestrator->>Broker: Command: NotifyCustomer
+Broker->>NotificationService: SendNotification\n{type: "BOOKING_FAILED",\nuserId: "john_doe_123",\nreason: "Payment declined"}
+NotificationService->>Gateway: WebSocket push
+Gateway->>WebApp: WebSocket:\n{type: "BOOKING_FAILED"}
+WebApp->Customer: Show notification:\n"Payment failed"
+end
+
+Orchestrator-->Gateway: Saga completed (FAILED)
+Gateway-->WebApp: 402 Payment Required
