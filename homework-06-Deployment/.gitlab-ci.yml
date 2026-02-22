@@ -1,0 +1,277 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║           CI/CD Pipeline — Payment Service                           ║
+# ║           E-Commerce Platform                                        ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+#
+# Загальний flow:
+#   MR/Push → Build → Test → Security → Deploy Staging → [ручне] → Deploy Production
+#
+# Середовища:
+#   staging    → автоматично після merge в main
+#   production → тільки після ручного підтвердження (when: manual)
+#
+# Чому Payment Service потребує суворого pipeline:
+#   - Працює з реальними грошима
+#   - Будь-який баг = фінансові втрати або репутаційний збиток
+#   - Підпадає під вимоги безпеки (PCI DSS тощо)
+
+# ──────────────────────────────────────────────────────────────────────
+# STAGES — порядок виконання стадій
+# ──────────────────────────────────────────────────────────────────────
+stages:
+  - build # Збірка Docker образу
+  - test # Всі типи тестів (паралельно всередині стадії)
+  - security # Сканування вразливостей (паралельно)
+  - deploy-staging # Автоматичний деплой на staging
+  - deploy-production # Ручний деплой на production
+
+# ──────────────────────────────────────────────────────────────────────
+# VARIABLES — глобальні змінні, доступні у всіх jobs
+# ──────────────────────────────────────────────────────────────────────
+variables:
+  # $CI_REGISTRY_IMAGE — автоматична змінна GitLab, шлях до Container Registry
+  # Приклад: registry.gitlab.com/mycompany/ecommerce/payment-service
+  IMAGE_NAME: $CI_REGISTRY_IMAGE/payment-service
+
+  # $CI_COMMIT_SHA — унікальний хеш поточного коміту (наприклад: a3f2c1d8...)
+  # Використовуємо як тег образу — так завжди знаємо який код в якому образі
+  # Краще ніж "latest", бо "latest" не дозволяє відрізнити версії
+  IMAGE_TAG: $CI_COMMIT_SHA
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 1: BUILD
+# Збираємо Docker образ і пушимо в GitLab Container Registry
+# ══════════════════════════════════════════════════════════════════════
+build:
+  stage: build
+
+  # Використовуємо офіційний Docker образ для збірки інших образів
+  image: docker:24
+
+  # docker:dind = Docker-in-Docker
+  # Потрібен щоб запускати Docker команди всередині GitLab runner-а
+  # Без цього runner не знає що таке "docker build"
+  services:
+    - docker:24-dind
+
+  script:
+    # Логінимось в GitLab Container Registry
+    # $CI_REGISTRY_USER, $CI_REGISTRY_PASSWORD, $CI_REGISTRY —
+    # автоматичні змінні GitLab, не потрібно задавати вручну
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+
+    # Збираємо образ з тегом = хеш коміту
+    # Dockerfile має знаходитись в корені репозиторію
+    - docker build -t $IMAGE_NAME:$IMAGE_TAG .
+
+    # Пушимо образ в Registry щоб наступні стадії могли його використати
+    - docker push $IMAGE_NAME:$IMAGE_TAG
+
+  # Запускаємо тільки для цих гілок:
+  # - main: основна гілка (production-ready код)
+  # - develop: гілка розробки
+  # - merge_requests: щоб перевіряти MR ще до merge
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 2: TEST
+# Три типи тестів запускаються паралельно (економить час)
+# ══════════════════════════════════════════════════════════════════════
+
+# ── 2.1 Unit Tests ───────────────────────────────────────────────────
+unit-tests:
+  stage: test
+  image: node:20-alpine # Легкий Node.js образ на базі Alpine Linux
+
+  script:
+    # npm ci — аналог npm install, але:
+    # - Використовує package-lock.json (детерміновані версії)
+    # - Швидший в CI середовищі
+    # - Падає якщо package-lock.json не відповідає package.json
+    - npm ci
+
+    # Запускаємо unit тести з coverage репортом
+    # --coverage генерує звіт покриття коду тестами
+    - npm run test:unit -- --coverage
+
+  # Регулярний вираз для парсингу % покриття з виводу Jest
+  # GitLab буде показувати цей % в інтерфейсі MR
+  coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
+
+  # artifacts — файли які зберігаються після завершення job
+  artifacts:
+    reports:
+      # Coverage report у форматі Cobertura — GitLab вміє його читати
+      # і показувати які рядки покриті/не покриті прямо в diff MR
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+
+# ── 2.2 Integration Tests ────────────────────────────────────────────
+integration-tests:
+  stage: test
+  image: node:20-alpine
+
+  # services — додаткові контейнери які запускаються поряд з job
+  # Payment Service потребує реальну БД і Redis для інтеграційних тестів
+  services:
+    - postgres:15 # Реальна PostgreSQL для тестів (не мок)
+    - redis:7 # Redis для кешування та черг
+
+  # Змінні середовища для підключення до тестової БД
+  # Ці значення автоматично використовуються postgres образом при старті
+  variables:
+    POSTGRES_DB: payment_test # Назва тестової бази даних
+    POSTGRES_USER: test # Тестовий юзер (не production!)
+    POSTGRES_PASSWORD: test # Тестовий пароль
+
+  script:
+    - npm ci
+    # Запускаємо інтеграційні тести — вони перевіряють:
+    # - Збереження транзакцій в БД
+    # - Роботу з Redis (локи, кеш)
+    # - Взаємодію між шарами застосунку
+    - npm run test:integration
+
+# ── 2.3 Contract Tests (Pact) ────────────────────────────────────────
+contract-tests:
+  stage: test
+  image: node:20-alpine
+
+  script:
+    - npm ci
+    # Pact contract тести — перевіряють що Payment Service
+    # відповідає на запити точно так як очікує Order Service (consumer)
+    # Якщо змінився формат відповіді — тест впаде ще до деплою
+    - npm run test:pact
+
+  artifacts:
+    paths:
+      # Зберігаємо згенеровані pact файли (контракти)
+      # Вони можуть бути опубліковані в Pact Broker для версіонування
+      - pacts/
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 3: SECURITY
+# Три незалежні перевірки безпеки — всі критичні для Payment
+# allow_failure: false означає — жодну не можна проігнорувати
+# ══════════════════════════════════════════════════════════════════════
+
+# ── 3.1 Dependency Scan ──────────────────────────────────────────────
+dependency-scan:
+  stage: security
+  image: node:20-alpine
+
+  script:
+    # npm audit перевіряє всі залежності на відомі вразливості (CVE)
+    # --audit-level=high — падаємо тільки на HIGH і CRITICAL вразливостях
+    # LOW і MODERATE — попереджаємо але не блокуємо
+    - npm audit --audit-level=high
+
+  # false = pipeline зупиниться якщо знайдено вразливість HIGH/CRITICAL
+  # Для Payment Service це обов'язково — не можна деплоїти з діркою в залежностях
+  allow_failure: false
+
+# ── 3.2 Static Application Security Testing (SAST) ──────────────────
+sast:
+  stage: security
+  image: returntocorp/semgrep # Semgrep — популярний інструмент статичного аналізу
+
+  script:
+    # Semgrep аналізує вихідний код без його запуску
+    # --config=auto — використовує набір правил від спільноти
+    # Знаходить: hardcoded secrets, SQL injection, небезпечні функції тощо
+    # --error — повертає ненульовий exit code якщо знайдено проблеми
+    - semgrep --config=auto --error src/
+
+  allow_failure: false # Якщо знайдено проблему в коді — зупиняємо pipeline
+
+# ── 3.3 Container Scan ───────────────────────────────────────────────
+container-scan:
+  stage: security
+  image: aquasec/trivy:latest # Trivy — сканер вразливостей для контейнерів
+
+  script:
+    # Сканує Docker образ який ми зібрали в stage build
+    # --exit-code 1 — повертає помилку якщо знайдено вразливості
+    # --severity HIGH,CRITICAL — перевіряємо тільки серйозні вразливості
+    # Перевіряє: базовий образ, встановлені пакети, бібліотеки
+    - trivy image --exit-code 1 --severity HIGH,CRITICAL $IMAGE_NAME:$IMAGE_TAG
+
+  allow_failure: false # Образ з критичною вразливістю не потрапить на сервер
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 4: DEPLOY STAGING
+# Автоматичний деплой після успішного merge в main
+# ══════════════════════════════════════════════════════════════════════
+deploy-staging:
+  stage: deploy-staging
+
+  # kubectl — утиліта для керування Kubernetes кластером
+  image: bitnami/kubectl:latest
+
+  # environment — GitLab знає про це середовище, показує в UI
+  # Дозволяє бачити історію деплоїв, поточну версію, посилання
+  environment:
+    name: staging
+    url: https://payment.staging.myshop.com
+
+  script:
+    # Оновлюємо image в існуючому Kubernetes Deployment
+    # deployment/payment-service — назва Deployment ресурсу в K8s
+    # payment — назва контейнера всередині пода
+    # -n staging — namespace в якому живе staging середовище
+    - kubectl set image deployment/payment-service
+      payment=$IMAGE_NAME:$IMAGE_TAG
+      -n staging
+
+    # Чекаємо поки всі поди успішно запустяться з новим образом
+    # --timeout=120s — якщо за 2 хвилини не запустились — вважаємо деплой невдалим
+    # Kubernetes автоматично зробить rollback до попередньої версії
+    - kubectl rollout status deployment/payment-service -n staging --timeout=120s
+
+  # Деплоїмо на staging тільки з main гілки
+  # MR і develop гілки — тільки проходять тести, не деплояться
+  only:
+    - main
+
+# ══════════════════════════════════════════════════════════════════════
+# STAGE 5: DEPLOY PRODUCTION
+# Ручний деплой — тільки після явного підтвердження людини
+# ══════════════════════════════════════════════════════════════════════
+deploy-production:
+  stage: deploy-production
+  image: bitnami/kubectl:latest
+
+  environment:
+    name: production
+    url: https://payment.myshop.com
+
+  script:
+    # Той самий kubectl set image, але в namespace production
+    - kubectl set image deployment/payment-service
+      payment=$IMAGE_NAME:$IMAGE_TAG
+      -n production
+
+    # Timeout більший ніж на staging (180s vs 120s)
+    # На production більше трафіку, поди можуть довше проходити health checks
+    # та graceful shutdown старих подів
+    - kubectl rollout status deployment/payment-service -n production --timeout=180s
+
+  only:
+    - main
+
+  # when: manual — JOB НЕ ЗАПУСКАЄТЬСЯ АВТОМАТИЧНО
+  # В GitLab UI з'являється кнопка "▶ Deploy to Production"
+  # Tech Lead або DevOps має натиснути її вручну після перевірки staging
+  # Для Payment Service це обов'язково — жодного auto-deploy на prod
+  when: manual
+
+  # needs — явна залежність: production деплой можливий
+  # тільки після успішного deploy-staging
+  # Без цього хтось міг би натиснути кнопку до того як staging готовий
+  needs:
+    - deploy-staging
