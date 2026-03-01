@@ -1,0 +1,75 @@
+@startuml
+skinparam sequenceMessageAlign center
+skinparam backgroundColor #FAFAFA
+skinparam participantBackgroundColor #E8F4FD
+skinparam participantBorderColor #2196F3
+
+title Authentication & Authorization Flow
+
+actor Client
+participant "API Gateway" as GW
+participant "Auth Service" as Auth
+participant "UserManagement\nService" as UM
+participant "OrderManagement\nService" as OM
+database "Auth DB\n(tokens)" as AuthDB
+database "User DB" as UserDB
+
+== Registration ==
+
+Client -> GW: POST /auth/register\n{email, password, name}
+GW -> Auth: forward request\n(public endpoint)
+Auth -> Auth: hash password (bcrypt)
+Auth -> UM: POST /users\n{email, hashedPassword, name}
+UM -> UserDB: INSERT user
+UserDB --> UM: userId
+UM --> Auth: {userId, email, name}
+Auth -> Auth: generate accessToken (JWT, 15min)\ngenerate refreshToken (JWT, 30d)
+Auth -> AuthDB: STORE refreshToken\n{userId, token, expiresAt}
+Auth --> GW: {accessToken, refreshToken, user}
+GW --> Client: 201 Created\n{accessToken, refreshToken, user}
+
+== Login ==
+
+Client -> GW: POST /auth/login\n{email, password}
+GW -> Auth: forward request\n(public endpoint)
+Auth -> UM: GET /users?email=...
+UM -> UserDB: SELECT user
+UserDB --> UM: user record
+UM --> Auth: {userId, hashedPassword, roles}
+Auth -> Auth: verify password (bcrypt.compare)
+alt password valid
+    Auth -> Auth: generate accessToken (JWT, 15min)\ngenerate refreshToken (JWT, 30d)
+    Auth -> AuthDB: STORE refreshToken
+    Auth --> GW: {accessToken, refreshToken}
+    GW --> Client: 200 OK\n{accessToken, refreshToken}
+else password invalid
+    Auth --> GW: 401 Unauthorized
+    GW --> Client: 401 Unauthorized
+end
+
+== Authorization (protected request) ==
+
+Client -> GW: GET /orders\nAuthorization: Bearer <accessToken>
+GW -> GW: validate JWT signature (local)\nextract {userId, roles, exp}
+alt token valid
+    GW -> OM: GET /orders\nX-User-Id: userId\nX-User-Roles: [customer]
+    OM -> OM: check role permissions\n(customer can view own orders)
+    OM --> GW: 200 OK {orders}
+    GW --> Client: 200 OK {orders}
+else token expired
+    GW --> Client: 401 Token Expired
+    Client -> GW: POST /auth/refresh\n{refreshToken}
+    GW -> Auth: forward request
+    Auth -> AuthDB: validate refreshToken\n(exists & not expired)
+    alt refreshToken valid
+        Auth -> Auth: generate new accessToken
+        Auth --> GW: {accessToken}
+        GW --> Client: 200 OK {accessToken}
+        note right of Client: Client retries original request\nwith new accessToken
+    else refreshToken invalid/expired
+        Auth --> GW: 401 Unauthorized
+        GW --> Client: 401 Session Expired\n(redirect to login)
+    end
+end
+
+@enduml
